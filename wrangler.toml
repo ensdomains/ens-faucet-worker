@@ -1,0 +1,10 @@
+name = "ens-faucet"
+main = "src/index.ts"
+compatibility_date = "2023-02-01"
+node_compat = true
+
+kv_namespaces = [
+  { binding = "USED_ADDRESS_KV", id = "935dcbfe87a34b6f9a5e63634f5b6407", preview_id = "3f92816734e144d3b7d6dc2a9fb19fee" }
+]
+
+[vars]
