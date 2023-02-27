@@ -37,6 +37,53 @@ const query = (method: string, params: any) =>
     body: JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 }),
   }).then((res) => res.json<BaseJsonRPCResponse>());
 
+type DomainArray = { id: string }[];
+
+// check mainnet for if address has ownership of a name
+const checkHasName = async (address: string) => {
+  const gqlQuery = `{
+    account(id: "${address.toLowerCase()}") {
+      domains(first: 1) {
+        id
+      }
+      registrations(first: 1) {
+        id
+      }
+      wrappedDomains(first: 1) {
+        id
+      }
+    }
+  }`;
+  const data = await fetch(
+    "https://api.thegraph.com/subgraphs/name/ensdomains/ens",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query: gqlQuery }),
+    }
+  ).then((res) =>
+    res.json<{
+      data?: {
+        account?: {
+          domains: DomainArray;
+          registrations: DomainArray;
+          wrappedDomains: DomainArray;
+        };
+      };
+    }>()
+  );
+
+  if (!data?.data?.account) return false;
+
+  const { domains, registrations, wrappedDomains } = data.data.account;
+
+  return (
+    domains.length > 0 || registrations.length > 0 || wrappedDomains.length > 0
+  );
+};
+
 export default {
   async fetch(
     request: Request,
@@ -108,10 +155,21 @@ export default {
 
     if (returnOnStatusChange) returnStatus();
 
-    const addressLastUsed = await env.USED_ADDRESS_KV.get(body.params[0]);
+    const address = body.params[0];
+
+    if (!address || !address.match(/^0x[a-fA-F0-9]{40}$/)) {
+      return makeRpcResponse(
+        { error: { code: -32000, message: "Invalid address" } },
+        body.id,
+        400
+      );
+    }
+
+    const addressLastUsed = await env.USED_ADDRESS_KV.get(address);
     const hasClaimed =
       addressLastUsed &&
       Date.now() - parseInt(addressLastUsed) < CLAIM_INTERVAL;
+    const hasName = await checkHasName(address);
 
     if (body.method === "faucet_getAddress") {
       if (hasClaimed) {
@@ -127,7 +185,7 @@ export default {
         );
       }
       return makeRpcResponse(
-        { result: { eligible: true, next: 0, status } },
+        { result: { eligible: hasName, next: 0, status } },
         body.id
       );
     }
@@ -142,6 +200,19 @@ export default {
       );
     }
 
+    if (!hasName) {
+      return makeRpcResponse(
+        {
+          error: {
+            code: -32000,
+            message: "Address does not own a name on mainnet",
+          },
+        },
+        body.id,
+        400
+      );
+    }
+
     if (status !== "ok") {
       return makeRpcResponse(
         { error: { code: -32000, message: `Faucet error: ${status}` } },
@@ -151,7 +222,7 @@ export default {
     }
 
     const tx = await relayer.sendTransaction({
-      to: body.params[0],
+      to: address,
       value: "0x" + CLAIM_AMOUNT.toString(16),
       speed: "fast",
       gasLimit: 21000,
