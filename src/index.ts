@@ -165,7 +165,10 @@ export default {
       );
     }
 
-    const addressLastUsed = await env.USED_ADDRESS_KV.get(address);
+    const addressLowerCase = address.toLowerCase();
+    const addressLastUsedLowerCase = await env.USED_ADDRESS_KV.get(addressLowerCase);
+    const addressLastUsed = addressLastUsedLowerCase || (addressLowerCase === address ? null : await env.USED_ADDRESS_KV.get(address));
+
     const hasClaimed =
       addressLastUsed &&
       Date.now() - parseInt(addressLastUsed) < CLAIM_INTERVAL;
