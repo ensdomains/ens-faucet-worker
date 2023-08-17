@@ -14,7 +14,8 @@
   "dependencies": {
     "@ethersproject/address": "^5.7.0",
     "aws-sdk": "link:stub",
-    "defender-relay-client": "^1.38.0"
+    "defender-relay-client": "^1.38.0",
+    "viem": "^1.6.0"
   },
   "pnpm": {
     "patchedDependencies": {
