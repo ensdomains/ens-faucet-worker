@@ -1,5 +1,5 @@
 export const corsHeaders = {
-  "Access-Control-Allow-Origin": "https://alpha.ens.domains",
+  "Access-Control-Allow-Origin": "https://app.ens.domains",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };

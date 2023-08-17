@@ -1,10 +1,10 @@
 import { Relayer } from "defender-relay-client/lib/relayer";
+import { Address, getAddress, toHex } from "viem";
 import { makeResponseFunc } from "./helpers";
 
 export interface Env {
   USED_ADDRESS_KV: KVNamespace;
-  RELAYER_KEY: string;
-  RELAYER_SECRET: string;
+  RELAYER_AUTH: string;
 }
 
 type JsonRPC = {
@@ -20,16 +20,36 @@ type BaseJsonRPCResponse = {
   result: string;
 };
 
-const CLAIM_INTERVAL = 1000 * 60 * 60 * 24 * 90;
-const CLAIM_AMOUNT = 250000000000000000n; // 0.25 ETH
 const SUPPORTED_METHODS = [
   "faucet_status",
   "faucet_getAddress",
   "faucet_request",
-];
+] as const;
+const SUPPORTED_NETWORKS = ["goerli", "sepolia"] as const;
 
-const query = (method: string, params: any) =>
-  fetch("https://web3.ens.domains/v1/goerli", {
+const CLAIM_INTERVAL_MAP: Record<SupportedNetwork, number> = {
+  goerli: 1000 * 60 * 60 * 24 * 7, // 1 week
+  sepolia: 1000 * 60 * 60 * 24 * 30, // 1 month
+};
+
+const CLAIM_AMOUNT_MAP: Record<SupportedNetwork, bigint> = {
+  goerli: 500000000000000000n, // 0.5 ETH
+  sepolia: 250000000000000000n, // 0.25 ETH
+};
+
+type SupportedMethod = (typeof SUPPORTED_METHODS)[number];
+type SupportedNetwork = (typeof SUPPORTED_NETWORKS)[number];
+
+const query = ({
+  network,
+  method,
+  params,
+}: {
+  network: SupportedNetwork;
+  method: string;
+  params: any[];
+}) =>
+  fetch(`https://web3.ens.domains/v1/${network}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -98,9 +118,11 @@ export default {
 
     const paths = url.pathname.split("/").filter((p) => p);
 
-    if (paths.length !== 0) {
-      return makeResponse("Not Found", 404);
-    }
+    const network =
+      paths.length === 0
+        ? "goerli"
+        : SUPPORTED_NETWORKS.find((n) => n === paths[0]);
+    if (!network) return makeResponse("Not Found", 404);
 
     if (request.method === "OPTIONS") {
       return makeResponse(null);
@@ -120,7 +142,7 @@ export default {
       );
     }
 
-    if (!SUPPORTED_METHODS.includes(body.method)) {
+    if (!SUPPORTED_METHODS.includes(body.method as SupportedMethod)) {
       return makeRpcResponse(
         { error: { code: -32601, message: "Method not found" } },
         body.id,
@@ -128,36 +150,53 @@ export default {
       );
     }
 
+    const { apiKey, apiSecret } = JSON.parse(env.RELAYER_AUTH)[network];
+    const claimAmount = CLAIM_AMOUNT_MAP[network];
+    const claimInterval = CLAIM_INTERVAL_MAP[network];
+
     const relayer = new Relayer({
-      apiKey: env.RELAYER_KEY,
-      apiSecret: env.RELAYER_SECRET,
+      apiKey,
+      apiSecret,
     });
     const item = await relayer.getRelayer();
     const returnOnStatusChange = body.method === "faucet_status";
     let status = "ok";
 
-    const returnStatus = () => makeRpcResponse({ result: { status } }, body.id);
+    const returnStatus = () =>
+      makeRpcResponse(
+        {
+          result: {
+            status,
+            amount: toHex(claimAmount),
+            interval: claimInterval,
+          },
+        },
+        body.id
+      );
 
     if (item.paused) {
       status = "paused";
       if (returnOnStatusChange) returnStatus();
     }
 
-    const balanceResponse = await query("eth_getBalance", [
-      item.address,
-      "latest",
-    ]);
+    const balanceResponse = await query({
+      network,
+      method: "eth_getBalance",
+      params: [item.address, "latest"],
+    });
     const balance = BigInt(balanceResponse.result);
-    if (CLAIM_AMOUNT > balance) {
+
+    if (claimAmount > balance) {
       status = "out of funds";
       if (returnOnStatusChange) returnStatus();
     }
 
     if (returnOnStatusChange) returnStatus();
 
-    const address = body.params[0];
-
-    if (!address || !address.match(/^0x[a-fA-F0-9]{40}$/)) {
+    let address: Address;
+    try {
+      address = getAddress(body.params[0]);
+    } catch {
       return makeRpcResponse(
         { error: { code: -32000, message: "Invalid address" } },
         body.id,
@@ -165,13 +204,16 @@ export default {
       );
     }
 
-    const addressLowerCase = address.toLowerCase();
-    const addressLastUsedLowerCase = await env.USED_ADDRESS_KV.get(addressLowerCase);
-    const addressLastUsed = addressLastUsedLowerCase || (addressLowerCase === address ? null : await env.USED_ADDRESS_KV.get(address));
+    const key = `${network}/${address}`;
 
+    const addressLastUsed = await env.USED_ADDRESS_KV.get(key).then((v) =>
+      v ? parseInt(v, 10) : 0
+    );
+    // the KV data should be expired if the claim interval has passed
+    // but this is just a safety check
     const hasClaimed =
-      addressLastUsed &&
-      Date.now() - parseInt(addressLastUsed) < CLAIM_INTERVAL;
+      addressLastUsed && Date.now() - addressLastUsed < claimInterval;
+
     const hasName = await checkHasName(address);
 
     if (body.method === "faucet_getAddress") {
@@ -180,7 +222,9 @@ export default {
           {
             result: {
               eligible: false,
-              next: addressLastUsed + CLAIM_INTERVAL,
+              amount: toHex(claimAmount),
+              interval: claimInterval,
+              next: addressLastUsed + claimInterval,
               status,
             },
           },
@@ -188,7 +232,15 @@ export default {
         );
       }
       return makeRpcResponse(
-        { result: { eligible: hasName, next: 0, status } },
+        {
+          result: {
+            eligible: hasName,
+            amount: toHex(claimAmount),
+            interval: claimInterval,
+            next: 0,
+            status,
+          },
+        },
         body.id
       );
     }
@@ -226,7 +278,7 @@ export default {
 
     const tx = await relayer.sendTransaction({
       to: address,
-      value: "0x" + CLAIM_AMOUNT.toString(16),
+      value: toHex(claimAmount),
       speed: "fast",
       gasLimit: 21000,
     });
@@ -239,7 +291,12 @@ export default {
       );
     }
 
-    await env.USED_ADDRESS_KV.put(body.params[0], Date.now().toString());
+    // record address as used
+    // will "expire" (delete) after claimInterval
+    await env.USED_ADDRESS_KV.put(key, Date.now().toString(), {
+      // expirationTtl is in seconds
+      expirationTtl: Math.floor(claimInterval / 1000),
+    });
 
     return makeRpcResponse({ result: { id: tx.transactionId } }, body.id);
   },
