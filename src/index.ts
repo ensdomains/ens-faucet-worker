@@ -7,18 +7,37 @@ export interface Env {
   RELAYER_AUTH: string;
 }
 
-type JsonRPC = {
+type JsonRpc = {
   jsonrpc: string;
   id: string | number | null;
   method: string;
   params: any;
 };
 
-type BaseJsonRPCResponse = {
+type RpcError = {
+  code: number;
+  message: string;
+};
+
+type BaseJsonRpcResponse = {
   jsonrpc: string;
   id: string | number | null;
-  result: string;
+  result?: string;
+  error?: RpcError;
 };
+
+type SuccessJsonRpcResponse = {
+  result: string;
+  error?: never;
+};
+
+type ErrorJsonRpcResponse = {
+  result?: never;
+  error: RpcError;
+};
+
+type JsonRpcResponse = BaseJsonRpcResponse &
+  (SuccessJsonRpcResponse | ErrorJsonRpcResponse);
 
 const SUPPORTED_METHODS = [
   "faucet_status",
@@ -55,7 +74,7 @@ const query = ({
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 }),
-  }).then((res) => res.json<BaseJsonRPCResponse>());
+  }).then((res) => res.json<JsonRpcResponse>());
 
 type DomainArray = { id: string }[];
 
@@ -132,7 +151,7 @@ export default {
       return makeResponse(`Unsupported method: ${request.method}`, 405);
     }
 
-    const body = await request.json<JsonRPC>().catch(() => null);
+    const body = await request.json<JsonRpc>().catch(() => null);
 
     if (!body || !body.jsonrpc || !body.method || !body.params) {
       return makeRpcResponse(
@@ -184,6 +203,19 @@ export default {
       method: "eth_getBalance",
       params: [item.address, "latest"],
     });
+    if ("error" in balanceResponse && balanceResponse.error) {
+      const { code, message } = balanceResponse.error;
+      return makeRpcResponse(
+        {
+          error: {
+            code: -32000,
+            message: `Error fetching balance (${code}): ${message}`,
+          },
+        },
+        body.id,
+        400
+      );
+    }
     const balance = BigInt(balanceResponse.result);
 
     if (claimAmount > balance) {
