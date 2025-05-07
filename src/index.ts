@@ -5,6 +5,7 @@ import { makeResponseFunc } from "./helpers";
 export interface Env {
   USED_ADDRESS_KV: KVNamespace;
   RELAYER_AUTH: string;
+  ENS_GRAPH_URI: string;
 }
 
 type JsonRPC = {
@@ -25,15 +26,13 @@ const SUPPORTED_METHODS = [
   "faucet_getAddress",
   "faucet_request",
 ] as const;
-const SUPPORTED_NETWORKS = ["goerli", "sepolia"] as const;
+const SUPPORTED_NETWORKS = ["sepolia"] as const;
 
 const CLAIM_INTERVAL_MAP: Record<SupportedNetwork, number> = {
-  goerli: 1000 * 60 * 60 * 24 * 7, // 1 week
   sepolia: 1000 * 60 * 60 * 24 * 30, // 1 month
 };
 
 const CLAIM_AMOUNT_MAP: Record<SupportedNetwork, bigint> = {
-  goerli: 500000000000000000n, // 0.5 ETH
   sepolia: 250000000000000000n, // 0.25 ETH
 };
 
@@ -60,7 +59,7 @@ const query = ({
 type DomainArray = { id: string }[];
 
 // check mainnet for if address has ownership of a name
-const checkHasName = async (address: string) => {
+const checkHasName = async (g: string, address: string) => {
   const gqlQuery = `{
     account(id: "${address.toLowerCase()}") {
       domains(first: 1) {
@@ -75,7 +74,7 @@ const checkHasName = async (address: string) => {
     }
   }`;
   const data = await fetch(
-    "https://api.thegraph.com/subgraphs/name/ensdomains/ens",
+    ENS_GRAPH_URI,
     {
       method: "POST",
       headers: {
@@ -111,7 +110,6 @@ export default {
     ctx: ExecutionContext
   ): Promise<Response> {
     const url = new URL(request.url);
-
     const { makeResponse, makeRpcResponse } = makeResponseFunc(
       request.headers.get("origin") || ""
     );
@@ -120,7 +118,7 @@ export default {
 
     const network =
       paths.length === 0
-        ? "goerli"
+        ? "sepolia"
         : SUPPORTED_NETWORKS.find((n) => n === paths[0]);
     if (!network) return makeResponse("Not Found", 404);
 
@@ -214,7 +212,7 @@ export default {
     const hasClaimed =
       addressLastUsed && Date.now() - addressLastUsed < claimInterval;
 
-    const hasName = await checkHasName(address);
+    const hasName = await checkHasName(env.ENS_GRAPH_URI, address);
 
     if (body.method === "faucet_getAddress") {
       if (hasClaimed) {
